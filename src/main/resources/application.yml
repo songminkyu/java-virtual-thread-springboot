@@ -1,0 +1,38 @@
+spring:
+  application:
+    name: virtual-thread-springboot
+
+  # ★ 이 한 줄이 핵심 — Tomcat이 요청마다 가상 스레드를 사용한다.
+  #   (@Async, Spring MVC 요청 처리, 스케줄러 등에 가상 스레드가 적용된다)
+  threads:
+    virtual:
+      enabled: true
+
+  # 실제 DB를 붙일 때 권장 설정 예시. 이 샘플은 DB 없이 동작하므로 주석 처리해 두었다.
+  # 가상 스레드가 아무리 많아도 커넥션은 여기 적힌 개수뿐이라는 점이 핵심이고,
+  # 그래서 OrderService에서 Semaphore로 진입을 제한한다.
+  #
+  # datasource:
+  #   hikari:
+  #     maximum-pool-size: 10
+  #     connection-timeout: 3000
+  #     leak-detection-threshold: 5000
+
+server:
+  port: 8080
+
+app:
+  db:
+    # 흉내낸 커넥션 풀 크기. OrderService의 Semaphore 허용치와 동일하게 맞춘다.
+    # (실제 운영에서는 spring.datasource.hikari.maximum-pool-size 와 맞추면 된다)
+    pool-size: 10
+    query-latency-ms: 30
+  external:
+    # 외부 API 호출 지연 흉내
+    order-latency-ms: 300
+    payment-latency-ms: 500
+    shipping-latency-ms: 400
+
+logging:
+  level:
+    com.example.vtdemo: INFO

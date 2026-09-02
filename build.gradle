@@ -1,0 +1,54 @@
+plugins {
+	id 'java'
+	id 'org.springframework.boot' version '4.1.1'
+	id 'io.spring.dependency-management' version '1.1.7'
+}
+
+group = 'com.example'
+version = '0.0.1-SNAPSHOT'
+description = 'Java 25 가상 스레드 프로덕션 패턴 - Spring Boot 샘플'
+
+java {
+	toolchain {
+		languageVersion = JavaLanguageVersion.of(25)
+	}
+}
+
+repositories {
+	mavenCentral()
+}
+
+dependencies {
+	implementation 'org.springframework.boot:spring-boot-starter-web'
+
+	testImplementation 'org.springframework.boot:spring-boot-starter-test'
+	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+/*
+ * StructuredTaskScope(JEP 505)는 JDK 25에서 아직 preview 기능이라 컴파일/실행 모두
+ * --enable-preview 가 필요하다.
+ *   - ScopedValue(JEP 506)는 JDK 25에서 정식 기능이라 플래그가 필요 없다.
+ *   - 구조적 동시성을 쓰지 않겠다면 아래 블록과
+ *     OrderAggregationService / OrderDetailsController 를 걷어내면 된다.
+ */
+tasks.withType(JavaCompile).configureEach {
+	options.encoding = 'UTF-8'
+	options.compilerArgs += ['--enable-preview']
+}
+
+tasks.withType(Test).configureEach {
+	useJUnitPlatform()
+	jvmArgs('--enable-preview')
+	testLogging {
+		events 'passed', 'skipped', 'failed'
+		showStandardStreams = true
+	}
+}
+
+tasks.named('bootRun') {
+	jvmArgs('--enable-preview')
+}
+
+// 빌드된 jar 를 직접 실행할 때도 플래그가 필요하다:
+//   java --enable-preview -jar build/libs/virtual-thread-springboot-0.0.1-SNAPSHOT.jar
