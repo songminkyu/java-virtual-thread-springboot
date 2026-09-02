@@ -26,20 +26,55 @@ dependencies {
 }
 
 /*
- * StructuredTaskScope(JEP 505)는 JDK 25에서 아직 preview 기능이라 컴파일/실행 모두
- * --enable-preview 가 필요하다.
- *   - ScopedValue(JEP 506)는 JDK 25에서 정식 기능이라 플래그가 필요 없다.
- *   - 구조적 동시성을 쓰지 않겠다면 아래 블록과
- *     OrderAggregationService / OrderDetailsController 를 걷어내면 된다.
+ * ─────────────────────────────────────────────────────────────────────────────
+ *  preview 기능은 기본적으로 꺼져 있다.
+ * ─────────────────────────────────────────────────────────────────────────────
+ *  StructuredTaskScope(JEP 505)는 JDK 25에서 아직 preview라 --enable-preview 와
+ *  IDE 설정이 필요하다. 그게 번거로우면 그냥 기본 빌드를 쓰면 된다:
+ *
+ *      ./gradlew bootRun        # preview 전혀 필요 없음
+ *      ./gradlew test
+ *
+ *  동시 호출 로직은 표준 API로 구현한 ExecutorOrderAggregationService 가 담당한다.
+ *
+ *  StructuredTaskScope 버전을 보고 싶다면 아래처럼 켠다:
+ *
+ *      ./gradlew bootRun -PenablePreview --args='--spring.profiles.active=preview'
+ *      ./gradlew test    -PenablePreview
+ *
+ *  ScopedValue(JEP 506)는 JDK 25 정식 기능이라 어느 쪽이든 플래그가 필요 없다.
  */
+def previewEnabled = project.hasProperty('enablePreview')
+
+sourceSets {
+	main {
+		java {
+			if (!previewEnabled) {
+				exclude '**/preview/**'
+			}
+		}
+	}
+	test {
+		java {
+			if (!previewEnabled) {
+				exclude '**/preview/**'
+			}
+		}
+	}
+}
+
 tasks.withType(JavaCompile).configureEach {
 	options.encoding = 'UTF-8'
-	options.compilerArgs += ['--enable-preview']
+	if (previewEnabled) {
+		options.compilerArgs += ['--enable-preview']
+	}
 }
 
 tasks.withType(Test).configureEach {
 	useJUnitPlatform()
-	jvmArgs('--enable-preview')
+	if (previewEnabled) {
+		jvmArgs('--enable-preview')
+	}
 	testLogging {
 		events 'passed', 'skipped', 'failed'
 		showStandardStreams = true
@@ -47,8 +82,18 @@ tasks.withType(Test).configureEach {
 }
 
 tasks.named('bootRun') {
-	jvmArgs('--enable-preview')
+	if (previewEnabled) {
+		jvmArgs('--enable-preview')
+	}
 }
 
-// 빌드된 jar 를 직접 실행할 때도 플래그가 필요하다:
+tasks.named('compileJava') {
+	doFirst {
+		println previewEnabled
+				? '>>> preview 기능 ON — StructuredTaskScope 구현이 포함된다 (preview 프로파일로 활성화)'
+				: '>>> preview 기능 OFF (기본) — 표준 API 구현만 사용한다'
+	}
+}
+
+// preview 를 켜고 빌드한 jar 를 직접 실행할 때는 플래그가 필요하다:
 //   java --enable-preview -jar build/libs/virtual-thread-springboot-0.0.1-SNAPSHOT.jar

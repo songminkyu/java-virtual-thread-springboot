@@ -14,26 +14,35 @@
 | Gradle | **8.14.3** (wrapper 포함) | Boot 4.1.1 요구사항: Gradle 8.14+ 또는 9.x |
 | 빌드 | Gradle Groovy DSL | `build.gradle` |
 
-## 실행
+## 실행 — preview 플래그가 필요 없습니다
 
 ```bash
 ./gradlew bootRun          # 애플리케이션 실행 (http://localhost:8080)
 ./gradlew test             # 테스트 실행
 ./gradlew build            # 빌드
+java -jar build/libs/virtual-thread-springboot-0.0.1-SNAPSHOT.jar
 ```
 
-jar 를 직접 실행할 때는 preview 플래그가 필요합니다:
+기본 빌드는 **표준 API만** 사용하므로 `--enable-preview` 도, IDE 추가 설정도 필요 없습니다.
+(`ScopedValue` 는 JDK 25 정식 기능이라 그대로 씁니다)
+
+### StructuredTaskScope 버전도 보고 싶다면 (선택)
 
 ```bash
-java --enable-preview -jar build/libs/virtual-thread-springboot-0.0.1-SNAPSHOT.jar
+./gradlew bootRun -PenablePreview --args='--spring.profiles.active=preview'
+./gradlew test    -PenablePreview
+java --enable-preview -jar build/libs/virtual-thread-springboot-0.0.1-SNAPSHOT.jar \
+     --spring.profiles.active=preview
 ```
 
-> **왜 `--enable-preview` 가 필요한가**
-> `StructuredTaskScope`(JEP 505)가 JDK 25에서 아직 preview 기능이기 때문입니다.
-> `build.gradle` 에 컴파일/테스트/bootRun 용으로 이미 설정해 두었습니다.
-> 구조적 동시성이 필요 없다면 `OrderAggregationService`, `OrderController`의 관련 메서드,
-> `OrderAggregationServiceTest` 를 걷어내고 build.gradle 의 preview 설정을 지우면 됩니다.
-> `ScopedValue`(JEP 506)는 JDK 25에서 **정식 기능**이라 플래그가 필요 없습니다.
+`-PenablePreview` 를 주면 `com.example.vtdemo.preview` 패키지가 컴파일에 포함되고
+필요한 플래그가 자동으로 붙습니다. 주지 않으면 그 패키지는 아예 빌드에서 제외됩니다.
+
+> **IDE에서 `StructuredTaskScope.Joiner cannot be resolved` 가 뜬다면**
+> IDE가 JDK 25가 아니라 JDK 21~23으로 컴파일하고 있다는 뜻입니다.
+> `StructuredTaskScope` 자체는 JDK 21에도 있지만 `Joiner` 는 JDK 24부터 생긴 타입이라
+> 그것만 못 찾습니다. 프로젝트 JDK를 25로 바꾸고 preview 를 켜거나,
+> 그냥 기본 빌드(preview 미사용)를 쓰면 됩니다.
 
 ## 핵심 설정 — 이 한 줄
 
@@ -84,7 +93,9 @@ src/main/java/com/example/vtdemo/
 ├── web/ThreadInfoController.java       # 패턴① Mount/Unmount 확인
 ├── order/OrderRepository.java          # HikariCP 흉내 (커넥션 유한)
 ├── order/OrderService.java             # 패턴④ 세마포어로 커넥션 풀 보호
-├── order/OrderAggregationService.java  # 패턴⑤ 구조적 동시성 (JDK 25 새 API)
+├── order/OrderAggregator.java          # 패턴⑤ 동시 호출 인터페이스
+├── order/ExecutorOrderAggregationService.java   #   └ 기본 구현 (표준 API, preview 불필요)
+├── preview/StructuredOrderAggregationService.java # └ 선택 구현 (-PenablePreview 시에만 빌드)
 ├── report/ReportService.java           # CPU 작업을 cpuBoundExecutor 에 위임
 └── web/BenchmarkController.java        # 풀링 안티패턴 등 비교 실험
 ```
@@ -140,21 +151,31 @@ public Order findOrder(long id) throws InterruptedException {
 검증 결과(커넥션 5개 풀에 요청 100개): 세마포어 적용 시 **성공 100 / 실패 0**,
 미적용 경로는 커넥션 획득 타임아웃 발생.
 
-### 패턴 ⑤ 구조적 동시성 — ⚠️ JDK 25에서 API가 바뀜
+### 패턴 ⑤ 여러 서비스 동시 호출 — 구현이 두 가지
 
-블로그·문서에 흔한 JDK 21 시절 코드는 **JDK 25에서 컴파일되지 않습니다.**
+`OrderAggregator` 인터페이스에 구현이 둘 있고, 스프링 프로파일로 갈아끼웁니다.
+**동작과 성능은 사실상 같습니다.** 같은 단언으로 두 구현을 모두 검증했고 결과도 같습니다:
+
+| | 표준 API (기본) | StructuredTaskScope (선택) |
+|---|---|---|
+| fan-out | 532ms | 509ms |
+| 실패 시 형제 취소 | 106ms | 108ms |
+| 가장 빠른 응답 채택 | 104ms | 108ms |
+| 타임아웃(200ms) | 204ms | 204ms |
+
+#### 기본: `ExecutorOrderAggregationService` (preview 불필요)
+
+| 시나리오 | 사용하는 표준 API |
+|---|---|
+| 전부 취합 + 실패 시 취소 | `ExecutorCompletionService` + `cancel(true)` |
+| 가장 빠른 응답 채택 | `executor.invokeAny(...)` |
+| 전체 타임아웃 | `executor.invokeAll(tasks, timeout, unit)` |
+| ScopedValue 전파 | 직접 꺼내서 재바인딩 (`traced(...)` 헬퍼) |
+
+#### 선택: `preview/StructuredOrderAggregationService`
 
 ```java
-// ❌ 옛 API (제거됨)
-try (var scope = new StructuredTaskScope.ShutdownOnFailure()) {
-    var t = scope.fork(() -> callApi());
-    scope.join();
-    scope.throwIfFailed();
-    return t.get();
-}
-
-// ✅ JDK 25 — Joiner 라는 "합류 정책"으로 통합
-try (var scope = StructuredTaskScope.open()) {          // 기본: 전부 성공 대기 + 실패 시 형제 취소
+try (var scope = StructuredTaskScope.open()) {   // 기본: 전부 성공 대기 + 실패 시 형제 자동 취소
     var order    = scope.fork(() -> clients.getOrder(id));
     var payment  = scope.fork(() -> clients.getPayment(id));
     var shipping = scope.fork(() -> clients.getShipping(id));
@@ -162,6 +183,13 @@ try (var scope = StructuredTaskScope.open()) {          // 기본: 전부 성공
     return new OrderDetails(order.get(), payment.get(), shipping.get());
 }
 ```
+
+취소 전파와 ScopedValue 상속을 스코프가 대신 해주므로 코드가 훨씬 짧습니다.
+그게 구조적 동시성으로 얻는 실질적 이득입니다.
+
+⚠️ **JDK 25에서 API가 바뀌었습니다.** 블로그·문서에 흔한 JDK 21 시절 코드
+(`new StructuredTaskScope.ShutdownOnFailure()` + `throwIfFailed()`)는 컴파일되지 않습니다.
+`ShutdownOnFailure` / `ShutdownOnSuccess` 는 `Joiner` 라는 합류 정책으로 통합되었습니다.
 
 | Joiner | 동작 |
 |---|---|
@@ -183,7 +211,8 @@ StructuredTaskScope.open(Joiner.<Object>awaitAllSuccessfulOrThrow(),
 | `VirtualThreadEnabledTest` | 실제 포트에 HTTP 요청을 보내 **가상 스레드에서 처리되는지**, 트레이스 ID가 전파되는지, 동시 요청 200개가 모두 성공하는지 |
 | `ExecutorConfigTest` | `ioBoundExecutor`는 가상 스레드, `cpuBoundExecutor`는 플랫폼 스레드인지 |
 | `OrderServiceSemaphoreTest` | 세마포어가 커넥션 풀을 보호하는지 / 없으면 고갈되는지 |
-| `OrderAggregationServiceTest` | fan-out, 실패 시 형제 취소, 가장 빠른 응답 채택, 타임아웃 |
+| `ExecutorOrderAggregationServiceTest` | fan-out, 실패 시 형제 취소, 가장 빠른 응답 채택, 타임아웃 (기본 구현) |
+| `preview/StructuredOrderAggregationServiceTest` | 같은 단언으로 StructuredTaskScope 구현 검증 (`-PenablePreview` 필요) |
 
 ## 실제 DB를 붙일 때
 
